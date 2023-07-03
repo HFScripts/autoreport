@@ -60,7 +60,7 @@ def get_subdomains(outfile_list, original_domain):
             continue
     return list(subdomains)
 
-def run_command(command, outfile=None):
+def run_command(command, outfile=None, append=False):
     """
     Executes a shell command and optionally writes its output to a file.
     If outfile is provided, dirsearch's own output file is used.
@@ -72,7 +72,8 @@ def run_command(command, outfile=None):
         if outfile is None:
             outfile = f"{command.split()[0]}_out.txt"
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            with open(outfile, "w") as out:
+            mode = "a" if append else "w"  # Decide the file mode based on the append flag
+            with open(outfile, mode) as out:
                 out.write(result.stdout.decode())
         else:
             result = subprocess.run(command, stderr=subprocess.PIPE, shell=True)
@@ -110,7 +111,7 @@ def run_command(command, outfile=None):
         print(f"Error occurred: {e}")
         return 2, outfile
         
-def create_pdf(successful_commands, no_output_commands, failed_commands, not_installed_commands, pdf_filename, user_input, subdomains):
+def create_pdf(successful_commands, no_output_commands, failed_commands, not_installed_commands, pdf_filename, user_input, subdomains, cloudflare_info):
     """
     Generates a PDF report that includes the outputs of the successful commands, 
     the names of the commands that produced no output, and the names of the failed commands.
@@ -166,8 +167,11 @@ def create_pdf(successful_commands, no_output_commands, failed_commands, not_ins
     story.append(Paragraph(f"Prepared By: Robot Security", styles['Title']))
 
     story.append(Spacer(1, 0.2*inch))
-    story.append(Paragraph(f"Subdomains identified: {len(subdomains)}", styles['Title']))
-    
+    story.append(Paragraph(subdomains, styles['Title']))
+
+    # Add the Cloudflare info
+    story.append(Paragraph(cloudflare_info, styles['Title']))
+
     for i, (command, filename) in enumerate(successful_commands):
         story.append(PageBreak())
         story.append(Paragraph(f'Command {i+1}: {command}', styles['CommandStyle']))
@@ -215,32 +219,6 @@ def create_pdf(successful_commands, no_output_commands, failed_commands, not_ins
         # Delete the image file
         if os.path.isfile(image_path):
             os.remove(image_path)
-
-def run_dirsearch_on_subdomains(subdomains):
-    """
-    For each subdomain, runs the dirsearch command and outputs to a separate file.
-    """
-    successful_commands = []
-    no_output_commands = []
-    failed_commands = []
-
-    for subdomain in subdomains:
-        dirsearch_outfile = f"dirsearch_{subdomain}_out.txt"
-        dirsearch_command = f"dirsearch --no-color -q -e php,js,conf,config,txt,py,sh,zip,rar -f --exclude-texts='Not found, 404, cloudflare, cloudfront, blocked' -u {subdomain} -o {dirsearch_outfile}"
-        print(f"Running {dirsearch_command}")
-        result, outfile = run_command(dirsearch_command, dirsearch_outfile)
-        if result == 0:
-            print(f"{dirsearch_command} was successful, output file: {outfile}")
-            successful_commands.append((dirsearch_command, outfile))
-        elif result == 1:
-            print(f"{dirsearch_command} produced no output, output file: {outfile}")
-            no_output_commands.append((dirsearch_command, outfile))
-        else:
-            print(f"{dirsearch_command} failed, output file: {outfile}")
-            failed_commands.append((dirsearch_command, outfile))
-    
-    return successful_commands, no_output_commands, failed_commands
-
 def main():
     """
     Main function to execute all steps of the penetration test.
@@ -252,7 +230,7 @@ def main():
         ("#dmitry -wines " + user_input, None),
         ("#theHarvester -b baidu,bevigil,bing,bingapi,certspotter,crtsh,dnsdumpster,duckduckgo,hackertarget,otx,threatminer,urlscan,yahoo -l 1000 -d " + user_input, None),
         ("#assetfinder --subs-only " + user_input, None),
-        ("#subfinder -silent -t 10 -timeout 3 -nW -d " + user_input, None),
+        ("subfinder -silent -t 10 -timeout 3 -nW -d " + user_input, None),
         ("#dig +noall +answer -t NS " + user_input, None),
         ("#dig +noall +answer -t MX " + user_input, None),
         ("#fierce --domain " + user_input, None),
@@ -290,22 +268,62 @@ def main():
     # Extract subdomains from the output files
     subdomains = get_subdomains([outfile for command, outfile in commands if outfile is not None], user_input)
     
-    # Run dirsearch on each subdomain and collect the results
-    dirsearch_successful, dirsearch_no_output, dirsearch_failed = run_dirsearch_on_subdomains(subdomains)
-    
-    # Append dirsearch results to the command results
-    successful_commands += dirsearch_successful
-    no_output_commands += dirsearch_no_output
-    failed_commands += dirsearch_failed
-    
     # Collect all output files
     all_outfiles = [outfile for command, outfile in successful_commands + no_output_commands + failed_commands]
     
     # Extract subdomains from all the output files
     subdomains = get_subdomains(all_outfiles, user_input)
+
+    whatweb_commands = []
     
+    # Create the whatweb commands for each subdomain
+    for subdomain in subdomains:
+        whatweb_commands.append(("whatweb --colour never " + subdomain, None))
+
+    whatweb_outputs = []
+    for subdomain in subdomains:
+        whatweb_command = f"whatweb --colour never {subdomain}"
+        print(f"Running {whatweb_command}")
+        result, outfile = run_command(whatweb_command, None)
+        if result == 0:
+            with open(outfile, "r") as f:
+                whatweb_outputs.append(f.read())
+        elif result == 1:
+            no_output_commands.append((whatweb_command, outfile))
+        elif result == 3:
+            not_installed_commands.append((whatweb_command, outfile))
+        else:
+            failed_commands.append((whatweb_command, outfile))
+    
+    # Now append the accumulated whatweb output to successful_commands just once
+    if whatweb_outputs:
+        outfile = "whatweb_out.txt"
+        with open(outfile, "w") as f:
+            f.write("\n".join(whatweb_outputs))
+        successful_commands.append(("WhatWeb", outfile))
+    
+        # Add the outfile to all_outfiles
+        all_outfiles.append(outfile)
+    
+        # Count the total number of lines and lines containing 'cloudflare' in whatweb_out.txt
+        with open(outfile, "r") as f:
+            lines = f.readlines()
+            total_lines = 0
+            cloudflare_lines = 0
+            for line in lines:
+                if line.startswith('htt'):
+                    total_lines += 1
+                    if 'cloudflare' in line.lower():
+                        cloudflare_lines += 1
+    
+        cloudflare_info = f"{cloudflare_lines} of {total_lines} Subdomains using Cloudflare"
+        print(cloudflare_info)
+        
+        subdomains = f"Unique HTTP/HTTPs Subdomains Identified: {total_lines}"
+        print(subdomains)
+
     # Create a PDF from the output files
-    create_pdf(successful_commands, no_output_commands, failed_commands, not_installed_commands, "command_outputs.pdf", user_input, subdomains)
+    create_pdf(successful_commands, no_output_commands, failed_commands, not_installed_commands, "command_outputs.pdf", user_input, subdomains, cloudflare_info)
     
     # Delete all the output files
     for outfile in all_outfiles:
