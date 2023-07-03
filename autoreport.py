@@ -69,19 +69,19 @@ def run_command(command, outfile=None, append=False):
     If the command succeeds and produces output, it returns 0.
     """
     try:
-        if outfile is None:
-            outfile = f"{command.split()[0]}_out.txt"
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            mode = "a" if append else "w"  # Decide the file mode based on the append flag
-            with open(outfile, mode) as out:
-                out.write(result.stdout.decode())
-        else:
+        mode = "a" if append else "w"  # Decide the file mode based on the append flag
+        if "dirsearch" in command:
             result = subprocess.run(command, stderr=subprocess.PIPE, shell=True)
             # Check if command was dirsearch and if so, modify the outfile to point to the actual output file
-            if "dirsearch" in command:
-                match = re.search(r"Output File: (.*\.txt)", result.stderr.decode())
-                if match:
-                    outfile = match.group(1)
+            match = re.search(r"Output File: (.*\.txt)", result.stderr.decode())
+            if match:
+                outfile = match.group(1)
+        else:
+            if outfile is None:
+                outfile = f"{command.split()[0]}_out.txt"
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            with open(outfile, mode) as out:
+                out.write(result.stdout.decode())
 
         # Check if command was successful
         if result.returncode == 0:
@@ -177,13 +177,21 @@ def create_pdf(successful_commands, no_output_commands, failed_commands, not_ins
         story.append(Paragraph(f'Command {i+1}: {command}', styles['CommandStyle']))
         story.append(Spacer(1, 0.2*inch))
         
-        with open(filename, 'r') as file:
-            lines = file.readlines()
-            clean_output = remove_non_printable_chars(''.join(line for line in lines if "An exception has occurred" not in line))
+        if "dirsearch" in command:
+            with open(filename, 'r') as file:
+                lines = file.readlines()
+                clean_output = remove_non_printable_chars(''.join(line for line in lines if "An exception has occurred" not in line))
         
-            for line in clean_output.split('\n'):
-                para = Paragraph(line, styles['OutputStyle'])
-                story.append(para)
+                for line in clean_output.split('\n'):
+                    para = Paragraph(line, styles['OutputStyle'])
+                    story.append(para)
+        else:
+            with open(filename, 'r') as file:
+                lines = file.readlines()
+                for line in lines:
+                    para = Paragraph(line, styles['OutputStyle'])
+                    story.append(para)
+
 
     # Add commands with no output
     if no_output_commands:
@@ -227,23 +235,20 @@ def main():
 
     # Define all commands to be executed
     commands = [
-        ("#dmitry -wines " + user_input, None),
-        ("#theHarvester -b baidu,bevigil,bing,bingapi,certspotter,crtsh,dnsdumpster,duckduckgo,hackertarget,otx,threatminer,urlscan,yahoo -l 1000 -d " + user_input, None),
-        ("#assetfinder --subs-only " + user_input, None),
+        ("dmitry -ines " + user_input, None),
+        ("theHarvester -b baidu,bevigil,bing,bingapi,certspotter,crtsh,dnsdumpster,duckduckgo,hackertarget,otx,threatminer,urlscan,yahoo -l 1000 -d " + user_input, None),
+        ("assetfinder --subs-only " + user_input, None),
         ("subfinder -silent -t 10 -timeout 3 -nW -d " + user_input, None),
-        ("#dig +noall +answer -t NS " + user_input, None),
-        ("#dig +noall +answer -t MX " + user_input, None),
+        ("dig +noall +answer -t NS " + user_input, None),
+        ("dig +noall +answer -t MX " + user_input, None),
         ("#fierce --domain " + user_input, None),
-        ("#dnsrecon -t std -d " + user_input, None),
-        ("#snallygaster --nowww " + user_input, None),
-        ("#whatweb -v " + user_input, None),
+        ("dnsrecon -t std -d " + user_input, None),
         ("#parsero -sb -u " + user_input, None),
-        ("#wpscan --url " + user_input + " --random-user-agent --no-update", None),
+        ("wpscan --url " + user_input + " --random-user-agent --no-update", None),
         ("#testssl --openssl /usr/bin/openssl " + user_input, None),
         ("#mkdir chad_results; chad -sos no -d chad_results -tr 100 -q 'ext:txt OR ext:pdf OR ext:doc OR ext:docx OR ext:xls OR ext:xlsx' -s *." + user_input, None),
         ("#git-dumper https://" + user_input + "/.git git_dumper_results", None),
         ("#getallurls -subs " + user_input, None),
-        ("#dirsearch -e php,js,conf,config,txt,py,sh,zip,rar -f --exclude-texts='Not found, 404, cloudflare, cloudfront, blocked' -u " + user_input, None)
     ]
 
     successful_commands = []
@@ -263,8 +268,7 @@ def main():
             not_installed_commands.append((command, outfile))
         else:
             failed_commands.append((command, outfile))
-    
-    
+   
     # Extract subdomains from the output files
     subdomains = get_subdomains([outfile for command, outfile in commands if outfile is not None], user_input)
     
@@ -295,6 +299,8 @@ def main():
         else:
             failed_commands.append((whatweb_command, outfile))
     
+    cloudflare_info = ""
+
     # Now append the accumulated whatweb output to successful_commands just once
     if whatweb_outputs:
         outfile = "whatweb_out.txt"
@@ -321,10 +327,30 @@ def main():
         
         subdomains = f"Unique HTTP/HTTPs Subdomains Identified: {total_lines}"
         print(subdomains)
+    else:
+        subdomains = f"Unique HTTP/HTTPs Subdomains Identified: 0"
 
+    # Get the current directory
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+
+    file_path = "whatweb_out.txt"
+    
+    if os.path.isfile(file_path):
+        with open(file_path, "r") as file:
+            lines = file.readlines()
+    
+    urls = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) > 0:
+            url = parts[0]
+            urls.append(url)
+    
+    print(urls)
+    
     # Create a PDF from the output files
     create_pdf(successful_commands, no_output_commands, failed_commands, not_installed_commands, "command_outputs.pdf", user_input, subdomains, cloudflare_info)
-    
+
     # Delete all the output files
     for outfile in all_outfiles:
         try:
